@@ -133,6 +133,32 @@ export interface Target {
   layerOrder: number;
 }
 
+export interface PatchTarget {
+  isStage: boolean;
+  name: string;
+  variables: {
+    [key: string]: Variable;
+  };
+  lists: {
+    [key: string]: List;
+  };
+  broadcasts: {
+    [key: string]: string;
+  };
+  blocks: {
+    [key: string]: Block<OpCode>;
+  };
+  comments: {
+    [key: string]: Comment;
+  };
+  currentCostume: number;
+  costumes: Costume[];
+  sounds: Sound[];
+  volume: number;
+  layerOrder: number;
+  threads: any[];
+}
+
 export interface Stage extends Target {
   isStage: true;
   tempo: number;

@@ -13,6 +13,7 @@ export default class Target {
   public scripts: Script[] = [];
   public variables: Variable[] = [];
   public lists: List[] = [];
+  public threads: any[] = [];
   public volume = 100;
   public layerOrder = 0;
 

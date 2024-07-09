@@ -4,6 +4,12 @@ import Target, { Sprite, Stage } from "../../Target";
 import * as BlockInput from "../../BlockInput";
 import * as sb3 from "../sb3/interfaces";
 import { OpCode } from "../../OpCode";
+import ConversionLayer from "./conversion-layer";
+import PatchTargetThread from "../../Patch-Target-Thread";
+import Script from "../../Script";
+import { processInputs } from "./scratch-conversion-helper";
+import ScratchConversionControl from "./scratch-conversion-control";
+import ScratchConversionOperator from "./scratch-conversion-operator";
 
 const BIS = sb3.BlockInputStatus;
 
@@ -86,7 +92,7 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
   }
 
   interface SerializeInputShadowOptions {
-    blockData: sb3.Target["blocks"];
+    blockData: sb3.PatchTarget["blocks"];
 
     parentId: string;
     primitiveOrOpCode: number | OpCode;
@@ -194,9 +200,9 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
   }
 
   interface SerializeInputsToInputsOptions<PassedInputs extends { [key: string]: BlockInput.Any }> {
-    target: Target;
+    target: sb3.PatchTarget;
 
-    blockData: sb3.Target["blocks"];
+    blockData: sb3.PatchTarget["blocks"];
 
     initialBroadcastName: string;
     customBlockDataMap: CustomBlockDataMap;
@@ -408,9 +414,9 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
   }
 
   interface SerializeInputsOptions {
-    target: Target;
+    target: sb3.PatchTarget;
 
-    blockData: sb3.Target["blocks"];
+    blockData: sb3.PatchTarget["blocks"];
 
     initialBroadcastName: string;
     customBlockDataMap: CustomBlockDataMap;
@@ -611,9 +617,9 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
   }
 
   interface SerializeBlockOptions {
-    target: Target;
+    target: sb3.PatchTarget;
 
-    blockData: sb3.Target["blocks"];
+    blockData: sb3.PatchTarget["blocks"];
 
     initialBroadcastName: string;
     customBlockDataMap: CustomBlockDataMap;
@@ -707,6 +713,8 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
   // serializeBlock, the two functions share the same options type.
   type SerializeBlockStackOptions = SerializeBlockOptions;
 
+
+  //IMPORTANT
   function serializeBlockStack(blocks: Block[], options: SerializeBlockStackOptions): string | null {
     // Serialize a stack of blocks, returning the ID of the first successfully
     // serialized block, or null if there is none.
@@ -764,7 +772,7 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
     [proccode: string]: CustomBlockData;
   }
 
-  function collectCustomBlockData(target: Target): CustomBlockDataMap {
+  function collectCustomBlockData(target: sb3.PatchTarget): CustomBlockDataMap {
     // Parse the scripts in a target, collecting metadata about each custom
     // block's arguments and other info, and return a mapping of proccode to
     // the associated data.
@@ -821,7 +829,7 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
     broadcasts: sb3.Sprite["broadcasts"];
   }
 
-  function serializeTarget(target: Target, options: SerializeTargetOptions): sb3.Target {
+  function serializeTarget(target: sb3.PatchTarget, options: SerializeTargetOptions): sb3.PatchTarget {
     // Serialize a target. This function typically isn't used on its own, in
     // favor of the specialized functions for sprites and stage. It contains
     // the base code shared across all targets - sounds and costumes, variables
@@ -862,6 +870,15 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
 
     const customBlockDataMap = collectCustomBlockData(target);
 
+
+    // THIS IS IMPORTANT
+    
+
+   
+
+    let threadsArr: any[] = [];
+    const { patchApi } = ConversionLayer;
+    const patchApiKeys = Object.keys(patchApi);
     for (const script of target.scripts) {
       serializeBlockStack(script.blocks, {
         target,
@@ -871,6 +888,7 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
         x: script.x,
         y: script.y
       });
+      threadsArr.push(convertBlocksPart(script, patchApi, patchApiKeys))
     }
 
     return {
@@ -881,8 +899,9 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
       layerOrder: target.layerOrder,
       volume: target.volume,
 
-      blocks: blockData,
+      blocks: {},
       broadcasts,
+      threads: threadsArr,
 
       // @todo sb-edit doesn't support comments (as of feb 12, 2020)
       comments: {},
@@ -1039,7 +1058,245 @@ export default function toPatch(project: Project, options: Partial<ToPatchOption
     };
   }
 
+  function convertBlocksPart(this: any, script: Script, patchApi: any, patchApiKeys: any[]) {
+    const thread = new PatchTargetThread();
+
+    if (script.hat == null) {
+        return;
+    }
+    thread.triggerEventId = script.hat?.opcode;
+    // console.log("blocks[hatId].opcode", blocks[hatId].opcode);
+    // TODO: triggerEventOption
+    // const hatFieldsKeys = Object.keys(blocks[hatId].fields);
+    // if (hatFieldsKeys && hatFieldsKeys.length > 0) {
+    //    if (blocks[hatId].opcode === "event_whenkeypressed") {
+    //       // eslint-disable-next-line prefer-destructuring
+    //       thread.triggerEventOption = blocks[hatId].fields[hatFieldsKeys[0]][0].toUpperCase();
+    //    } else {
+    //       // eslint-disable-next-line prefer-destructuring
+    //       thread.triggerEventOption = blocks[hatId].fields[hatFieldsKeys[0]][0];
+    //    }
+    // }
+
+    if (script.hat.opcode === "event_whenkeypressed") {
+        // eslint-disable-next-line prefer-destructuring
+        thread.triggerEventOption = script.hat.inputs.KEY_OPTION.value.toUpperCase();
+     } else {
+        // eslint-disable-next-line prefer-destructuring
+        let inputs = Object.values(script.hat.inputs)[0].value;
+        if (Object.values(script.hat.inputs).length != 0 && inputs) {
+            thread.triggerEventOption = inputs.toString();
+        }
+     }
+    // Convert code
+    let currentBlockId = script.hat.next;
+    while (currentBlockId) {
+        let currentBlockIdNum = Number.parseInt(currentBlockId);
+       const currentBlock = script.blocks[currentBlockIdNum];
+       // Store a copy of the opcode so we don't have to keep doing currentBlock.opcode
+       const { opcode } = currentBlock;
+
+       // TODO: figure out nested blocks
+
+       // Convert the block
+       // Duplicates shouldn't exist in the translation API, but if they do the first entry will be used
+       let patchKey = null;
+       for (let i = 0; i < patchApiKeys.length; i++) {
+          const key = patchApiKeys[i];
+
+          if (patchApi[key].opcode === opcode) {
+             patchKey = key;
+             break;
+          }
+       }
+
+       let scratchControlConverter = new ScratchConversionControl();
+
+        let scratchOperatorConverter = new ScratchConversionOperator();
+       if (!patchKey) {
+          if (opcode.substring(0, 8) === "control_") {
+             const conversionResult = scratchControlConverter.convertControlBlock(script.blocks, currentBlockId, patchApi, patchApiKeys, convertBlocksPart, this);
+             thread.script += `${conversionResult}\n`;
+          } else if (opcode.substring(0, 9) === "operator_") {
+             const conversionResult = scratchOperatorConverter.convertOperatorBlock(script.blocks, currentBlockId, patchApi, patchApiKeys, convertBlocksPart, this);
+             thread.script += `${conversionResult}\n`;
+          } else {
+             // Couldn't find the opcode in the map.
+             console.error("Error translating from scratch to patch. Unable to find the key for the opcode %s.", opcode);
+          }
+       } else {
+          // const inputsKeys = Object.keys(currentBlock.inputs);
+          const detectedArgs = processInputs(script.blocks, currentBlockId, currentBlock, patchApi, patchApiKeys, this.convertBlocksPart.bind(this), true, false);
+
+          /* for (let i = 0; i < inputsKeys.length; i++) {
+             const inputsKey = inputsKeys[i];
+
+             // Add options to change this based on language later.
+             if (patchArgs !== "") {
+                patchArgs += ", ";
+             }
+
+             // TODO: validate this more
+             let newArg = "";
+
+             const argType = getArgType(currentBlock.inputs[inputsKey])
+
+             switch (argType) {
+                case 0: {
+                   newArg = `${currentBlock.inputs[inputsKey][1][1]}`;
+                   break;
+                }
+                case 1: {
+                   newArg = `"${currentBlock.inputs[inputsKey][1][1]}"`;
+                   break;
+                }
+                case 2: {
+                   // Nested block
+                   const subThread = this.convertBlocksPart(blocks, currentBlockId, currentBlock.inputs[inputsKey][1], patchApi, patchApiKeys);
+                   // remove the newline
+                   newArg = subThread.script.substring(0, subThread.script.length - 1);
+                   break;
+                }
+                default: {
+                   console.error("Unknown argType.");
+                   break;
+                }
+             }
+
+             patchArgs += newArg;
+          } */
+
+          let patchCode = "";
+
+          const conversionLayerResult = patchApi[patchKey];
+          if (conversionLayerResult.hasOwnProperty("returnInstead")) {
+             let patchArgs = "";
+             for (let i = 0; i < conversionLayerResult.returnInstead.length; i++) {
+                const val = conversionLayerResult.returnInstead[i];
+
+                // Add options to change this based on language later.
+                if (patchArgs !== "") {
+                   patchArgs += ", ";
+                }
+
+                patchArgs += val;
+             }
+
+             patchCode = `${patchArgs}\n`;
+          } else if (conversionLayerResult.hasOwnProperty("returnParametersInstead")) {
+             let patchArgs = "";
+             for (let i = 0; i < conversionLayerResult.returnParametersInstead.length; i++) {
+                const parameter = conversionLayerResult.returnParametersInstead[i];// .toUpperCase();
+
+                // Add options to change this based on language later.
+                if (patchArgs !== "") {
+                   patchArgs += ", ";
+                }
+
+                if (detectedArgs[parameter]) {
+                   patchArgs += detectedArgs[parameter];
+                } else {
+                   console.warn("Couldn't find parameter with opcode %s.", parameter);
+                   patchArgs += "\"# Error: couldn't find the parameter to go here.\"";
+                }
+             }
+
+             patchCode = `${patchArgs}\n`;
+          } else {
+             let patchArgs = "";
+             for (let i = 0; i < conversionLayerResult.parameters.length; i++) {
+                const parameter = conversionLayerResult.parameters[i];// .toUpperCase();
+
+                // Add options to change this based on language later.
+                if (patchArgs !== "") {
+                   patchArgs += ", ";
+                }
+
+                if (detectedArgs[parameter]) {
+                   patchArgs += detectedArgs[parameter];
+                } else {
+                   console.warn("Couldn't find parameter with opcode %s.", parameter);
+                   patchArgs += "\"# Error: couldn't find the parameter to go here.\"";
+                }
+             }
+
+             // Handle a special case: Patch implements the Ask block differently
+             // TODO: should this be a global variable?
+             if (currentBlock.opcode === "sensing_askandwait") {
+                patchKey = `_patchAnswer = ${patchKey}`;
+             }
+
+             // Join all the bits and pieces together. Add options to change this based on language later.
+             patchCode = `${patchKey}(${patchArgs})\n`
+          }
+
+          thread.script += patchCode;
+       }
+
+       // Next block
+       currentBlockId = currentBlock.next;
+    }
+
+    return thread;
+ }
+
+ /**
+  * Converts an object representation of a Scratch target's blocks into an object
+  * representation of the corresponding Patch threads and thread code.
+  *
+  * @param {Object.<string, ScratchBlock>} blocks
+  * @param {Object.<string, [Number, String]>} _variables
+  * @returns {PatchTargetThread[]} An array of object representations of the patch threads
+  */
+//  function convertTargetBlocks(blocks: Block[], _variables: never[]) {
+//     // TODO: convert variables
+//     // https://en.scratch-wiki.info/wiki/Scratch_File_Format#Blocks
+
+//     const blocksKeys = Object.keys(blocks);
+
+//     const returnVal: any[] = [];
+
+//     // const eventBlocks = new Scratch3EventBlocks({ on: () => { }, startHats: () => { } });
+//     // const controlBlocks = new Scratch3ControlBlocks({ on: () => { }, startHats: () => { } });
+
+//     // const hats = Object.keys({...eventBlocks.getHats(), ...controlBlocks.getHats()});
+
+//     const hatLocations: number[] = [];
+
+//     blocksKeys.forEach(blockId => {
+//         let numBlockId = Number.parseInt(blockId);
+//        const block = blocks[numBlockId];
+//        if (block.isHat) {
+//           hatLocations.push(numBlockId);
+//        }
+//     });
+
+//     const { patchApi } = ConversionLayer;
+//     const patchApiKeys = Object.keys(patchApi);
+
+//     hatLocations.forEach(hatId => {
+//        const returnValPart = convertBlocksPart(blocks, hatId, blocks[hatId].next, patchApi, patchApiKeys);
+
+//        if (returnValPart.script.includes("math.")) {
+//           returnValPart.script = `import math\n\n${ returnValPart.script }`;
+//        }
+
+//        if (returnValPart.script.includes("patch_random(")) {
+//           returnValPart.script = `import random\n\n# This mimics the behavior of Scratch's random block\ndef patch_random(num1, num2):\n  if ((num1 % 1) == 0) and ((num2 % 1) == 0):\n    return random.randint(num1, num2)\n  else:\n    return round(random.uniform(num1, num2), 2)\n\n${ returnValPart.script }`;
+//        }
+
+//        returnVal.push(returnValPart);
+//     });
+
+//     return returnVal;
+//  }
+
+  //THIS IS THE MAJOR RETURN
   return {
     json: JSON.stringify(serializeProject(project))
   };
+
+
+  
+  
 }
